@@ -1,17 +1,14 @@
 use chat_server::ThreadPool;
 use popol::{Events, Sources};
-use std::net::TcpListener;
-use std::net::TcpStream;
-use std::thread;
 use std::time::Duration;
-use std::{fs, io};
-use std::{
-    io::prelude::*,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
-};
+use std::thread;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::sync::atomic::AtomicBool;
+use std::net::{TcpStream};
+use std::net::TcpListener;
+use std::io::prelude::*;
+use std::fs;
 
 #[derive(Eq, PartialEq, Clone)]
 enum Source {
@@ -45,7 +42,7 @@ fn main() {
                 Source::Listener => loop {
                     let (conn, _addr) = match listener.accept() {
                         Ok((conn, addr)) => (conn, addr),
-                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                         Err(_) => return,
                     };
 
