@@ -1,19 +1,18 @@
-use std::sync::{
-    mpsc::{self},
-    Arc, Mutex,
-};
+use std::sync::Mutex;
+use std::sync::Arc;
+use std::sync::mpsc;
 use std::thread;
-
-pub struct ThreadPool {
-    workers: Vec<Worker>,
-    sender: mpsc::Sender<Message>,
-}
 
 type Job = Box<dyn FnOnce() + Send + 'static>;
 
 enum Message {
     NewJob(Job),
     Terminate,
+}
+
+pub struct ThreadPool {
+    workers: Vec<Worker>,
+    sender: mpsc::Sender<Message>,
 }
 
 impl ThreadPool {
@@ -74,16 +73,15 @@ impl Worker {
                     println!("Worker {} got a job; executing.", id);
 
                     job();
-                    
+
                     println!("Worker {} finished job.", id);
-                },
+                }
                 Message::Terminate => {
                     println!("Worker {} terminating", id);
 
                     break;
                 }
             }
-
         });
 
         Worker {
