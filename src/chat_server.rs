@@ -3,6 +3,7 @@ use popol::Events;
 use popol::Sources;
 use std::fs;
 use std::io::prelude::*;
+use std::io::BufReader;
 use std::net::TcpListener;
 use std::net::TcpStream;
 use std::sync::atomic::AtomicBool;
@@ -23,10 +24,7 @@ impl ChatServer {
         let listener = TcpListener::bind("127.0.0.1:8080").unwrap();
         listener.set_nonblocking(true).unwrap();
 
-        let pool = ThreadPool::new(4);
         let mut sources = Sources::new();
-        let mut events = Events::new();
-
         sources.register(Source::Listener, &listener, popol::interest::READ);
 
         let running = Arc::new(AtomicBool::new(true));
@@ -36,6 +34,9 @@ impl ChatServer {
             running_handler.store(false, Ordering::SeqCst);
         })
         .unwrap();
+
+        let mut events = Events::new();
+        let pool = ThreadPool::new(4);
 
         while running.load(Ordering::SeqCst) {
             // Wait for something to happen on our sources.
@@ -60,13 +61,14 @@ impl ChatServer {
     }
 
     fn handle_connection(mut stream: TcpStream) {
-        let mut buffer = [0; 1024];
-
         stream.set_nonblocking(false).unwrap();
-        stream.read(&mut buffer).unwrap();
+        let mut reader = BufReader::new(&stream);
 
-        let get = b"GET / HTTP/1.1\r\n";
-        let sleep = b"GET /sleep HTTP/1.1\r\n";
+        let get = "GET / HTTP/1.1\r\n";
+        let sleep = "GET /sleep HTTP/1.1\r\n";
+
+        let mut buffer = String::new();
+        reader.read_line(&mut buffer).unwrap();
 
         let (status_line, filename) = if buffer.starts_with(get) {
             ("HTTP/1.1 200 OK", "hello.html")
