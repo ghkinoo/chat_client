@@ -3,6 +3,7 @@ mod chat_server;
 mod thread_pool;
 use std::{env, io};
 
+// Very simple main. Takes a couple of arguments and that's it.
 fn main() {
     let args: Vec<String> = env::args().collect();
 
