@@ -1,7 +1,7 @@
 mod chat_client;
 mod chat_server;
 mod thread_pool;
-use std::env;
+use std::{env, io};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -19,9 +19,9 @@ fn main() {
         "client" => {
             let client = chat_client::ChatClient {};
             if args.len() != 3 {
-                client.run(String::from("Nobody"));
+                client.run(String::from("Nobody"), io::stdin(), io::stdout());
             } else {
-                client.run(args[2].clone());
+                client.run(args[2].clone(), io::stdin(), io::stdout());
             }
         }
         _ => println!("You must specify client or server"),
