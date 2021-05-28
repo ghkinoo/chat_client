@@ -2,28 +2,97 @@ use popol::Events;
 use popol::Sources;
 use std::io;
 use std::io::prelude::*;
-use std::io::BufReader;
+use std::io::BufWriter;
 use std::net::TcpStream;
+use std::process;
+use std::sync::mpsc;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::thread;
 
 #[derive(Eq, PartialEq, Clone)]
 enum Source {
-    Client,
+    StandardIn,
+    Server
 }
 
 pub struct ChatClient {}
 
 impl ChatClient {
     pub fn run(&self) {
-        let input_thread = thread::spawn(|| ChatClient::handle_input());
+        let (room_sender, room_receiver) = mpsc::channel();
+        let room_sender = Arc::new(Mutex::new(room_sender));
+        let room_receiver = Arc::new(Mutex::new(room_receiver));
+
+        let room_thread = thread::spawn(|| ChatClient::handle_room(room_receiver));
+        let input_thread = thread::spawn(|| ChatClient::handle_input(room_sender));
+
         input_thread.join().unwrap();
+        room_thread.join().unwrap();
     }
 
-    fn handle_input() {
+    fn handle_room(room_receiver: Arc<Mutex<mpsc::Receiver<String>>>) {
+        let mut stream = match TcpStream::connect("127.0.0.1:8080") {
+            Ok(stream) => stream,
+            Err(err) => {
+                print!("{}", err);
+                match err.raw_os_error() {
+                    Some(code) => process::exit(code),
+                    None => process::exit(1),
+                }
+            }
+        };
+
+        stream.set_nonblocking(true);
+
+        let mut buffer = [0; 1024];
+
+        let mut sources = Sources::new();
+        sources.register(Source::Server, &stream, popol::interest::ALL);
+
+        let mut events = Events::new();
+
+        loop {
+            // Wait for something to happen on our sources.
+            sources.wait(&mut events).unwrap();
+
+            for (key, event) in events.iter() {
+                match key {
+                    Source::Server if event.readable => match stream.read(&mut buffer) {
+                        Ok(bytes_read) => {
+                            if bytes_read == 0 {
+                                return;
+                            }
+                            println!("{}", String::from_utf8(buffer[..bytes_read].to_vec()).unwrap());
+                        }
+                        Err(_) => {}
+                    },
+                    Source::Server if event.writable => {
+                        match room_receiver.lock().unwrap().try_recv() {
+                            Ok(message) => {
+                                let message = message.trim();
+                                match message {
+                                    "/quit" => return,
+                                    _ => {
+                                        stream.write(message.as_bytes()).unwrap();
+                                        stream.flush().unwrap();
+                                    }
+                                }
+                            }
+                            Err(_) => {}
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn handle_input(room_sender: Arc<Mutex<mpsc::Sender<String>>>) {
         let stdin = io::stdin();
 
         let mut sources = Sources::new();
-        sources.register(Source::Client, &stdin, popol::interest::READ);
+        sources.register(Source::StandardIn, &stdin, popol::interest::READ);
 
         let mut events = Events::new();
 
@@ -33,32 +102,23 @@ impl ChatClient {
 
             for (key, _event) in events.iter() {
                 match key {
-                    Source::Client => loop {
+                    Source::StandardIn => {
                         let mut one_line = String::new();
                         match stdin.read_line(&mut one_line) {
                             Ok(_) => {
-                                let one_line = one_line.trim();
-                                match &one_line[..] {
-                                    "/quit" => return,
-                                    _ => println!("{}", one_line),
+                                if one_line.trim() == "/quit" {
+                                    room_sender.lock().unwrap().send(one_line).unwrap();
+                                    return;
                                 }
+                                room_sender.lock().unwrap().send(one_line).unwrap();
                             }
-                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                            Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                             Err(_) => return,
-                        };
+                        }
                     },
+                    _ => {}
                 }
             }
         }
-    }
-
-    fn handle_output() {
-        let stream = TcpStream::connect("127.0.0.1:8080").unwrap();
-        let mut reader = BufReader::new(&stream);
-
-        let mut buffer = String::new();
-        reader.read_line(&mut buffer).unwrap();
-
-        println!("{}", buffer);
     }
 }

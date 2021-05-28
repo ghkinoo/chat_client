@@ -5,7 +5,6 @@ use std::env;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    println!("{:?}", args);
 
     if args.len() != 2 {
         println!("You must specify client or server");

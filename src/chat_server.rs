@@ -1,20 +1,22 @@
 use super::thread_pool::ThreadPool;
 use popol::Events;
 use popol::Sources;
-use std::fs;
+use core::time;
+use std::io;
 use std::io::prelude::*;
-use std::io::BufReader;
 use std::net::TcpListener;
 use std::net::TcpStream;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::thread;
-use std::time::Duration;
 
 #[derive(Eq, PartialEq, Clone)]
 enum Source {
     Listener,
+    Client,
 }
 
 pub struct ChatServer {}
@@ -31,12 +33,23 @@ impl ChatServer {
 
         let running_handler = running.clone();
         ctrlc::set_handler(move || {
-            running_handler.store(false, Ordering::SeqCst);
+            running_handler.clone().store(false, Ordering::SeqCst);
         })
         .unwrap();
 
         let mut events = Events::new();
         let pool = ThreadPool::new(4);
+
+        let (room_sender, room_receiver) = mpsc::channel();
+        let (message_sender, message_receiver) = mpsc::channel();
+
+        let running_handler = running.clone();
+        let room_sender = Arc::new(Mutex::new(room_sender));
+        let message_receiver = Arc::new(Mutex::new(message_receiver));
+        pool.execute(|| ChatServer::handle_room(running_handler, message_receiver, room_sender));
+
+        let room_receiver = Arc::new(Mutex::new(room_receiver));
+        let message_sender = Arc::new(Mutex::new(message_sender));
 
         while running.load(Ordering::SeqCst) {
             // Wait for something to happen on our sources.
@@ -51,43 +64,119 @@ impl ChatServer {
                             Err(_) => return,
                         };
 
+                        let running_handler = running.clone();
+                        let room_receiver = room_receiver.clone();
+                        let message_sender = message_sender.clone();
+
                         pool.execute(|| {
-                            ChatServer::handle_connection(conn);
+                            ChatServer::handle_client(
+                                conn,
+                                running_handler,
+                                room_receiver,
+                                message_sender,
+                            );
                         });
                     },
+                    _ => {}
                 }
             }
         }
     }
 
-    fn handle_connection(mut stream: TcpStream) {
-        stream.set_nonblocking(false).unwrap();
-        let mut reader = BufReader::new(&stream);
+    fn handle_room(
+        running: Arc<AtomicBool>,
+        message_receiver: Arc<Mutex<mpsc::Receiver<String>>>,
+        room_sender: Arc<Mutex<mpsc::Sender<String>>>,
+    ) {
+        println!("Room started");
 
-        let get = "GET / HTTP/1.1\r\n";
-        let sleep = "GET /sleep HTTP/1.1\r\n";
+        while running.load(Ordering::SeqCst) {
+            match message_receiver.lock().unwrap().try_recv() {
+                Ok(message) => {
+                    room_sender.lock().unwrap().send(message).unwrap();
+                }
+                Err(_) => {}
+            }
+            thread::sleep(time::Duration::from_millis(10));
+        }
+    }
 
-        let mut buffer = String::new();
-        reader.read_line(&mut buffer).unwrap();
+    fn handle_client(
+        mut stream: TcpStream,
+        running: Arc<AtomicBool>,
+        room_receiver: Arc<Mutex<mpsc::Receiver<String>>>,
+        message_sender: Arc<Mutex<mpsc::Sender<String>>>,
+    ) {
+        println!("Client connected");
 
-        let (status_line, filename) = if buffer.starts_with(get) {
-            ("HTTP/1.1 200 OK", "hello.html")
-        } else if buffer.starts_with(sleep) {
-            thread::sleep(Duration::from_secs(5));
-            ("HTTP/1.1 200 OK", "hello.html")
-        } else {
-            ("HTTP/1.1 404 NOT FOUND", "404.html")
-        };
+        let mut buffer = [0; 1024];
 
-        let contents = fs::read_to_string(filename).unwrap();
-        let response = format!(
-            "{}\r\nContent-Length: {}\r\n\r\n{}",
-            status_line,
-            contents.len(),
-            contents
-        );
+        let mut sources = Sources::new();
+        sources.register(Source::Client, &stream, popol::interest::ALL);
+        let mut events = Events::new();
 
-        stream.write(response.as_bytes()).unwrap();
-        stream.flush().unwrap();
+        while running.load(Ordering::SeqCst) {
+            // Wait for something to happen on our sources.
+            sources.wait(&mut events).unwrap();
+
+            for (key, event) in events.iter() {
+                match key {
+                    Source::Client if event.readable => match stream.read(&mut buffer) {
+                        Ok(bytes_read) => {
+                            if bytes_read == 0 {
+                                return;
+                            }
+                            let buffer_vec = buffer[..bytes_read].to_vec();
+                            message_sender
+                                .lock()
+                                .unwrap()
+                                .send(String::from_utf8(buffer_vec).unwrap())
+                                .unwrap();
+                        }
+                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
+                        Err(_) => return,
+                    },
+                    Source::Client if event.writable => {
+                        match room_receiver.lock().unwrap().try_recv() {
+                            Ok(message) => {
+                                stream.write(message.as_bytes()).unwrap();
+                                stream.flush().unwrap();
+                            }
+                            Err(_) => {}
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // stream.set_nonblocking(false).unwrap();
+        // let mut reader = BufReader::new(&stream);
+
+        // let get = "GET / HTTP/1.1\r\n";
+        // let sleep = "GET /sleep HTTP/1.1\r\n";
+
+        // let mut buffer = String::new();
+        // reader.read_line(&mut buffer).unwrap();
+
+        // let (status_line, filename) = if buffer.starts_with(get) {
+        //     ("HTTP/1.1 200 OK", "hello.html")
+        // } else if buffer.starts_with(sleep) {
+        //     thread::sleep(Duration::from_secs(5));
+        //     ("HTTP/1.1 200 OK", "hello.html")
+        // } else {
+        //     ("HTTP/1.1 404 NOT FOUND", "404.html")
+        // };
+
+        // let contents = fs::read_to_string(filename).unwrap();
+        // let response = format!(
+        //     "{}\r\nContent-Length: {}\r\n\r\n{}",
+        //     status_line,
+        //     contents.len(),
+        //     contents
+        // );
+
+        // stream.write(response.as_bytes()).unwrap();
+        // stream.flush().unwrap();
     }
 }
