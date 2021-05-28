@@ -45,7 +45,6 @@ impl ChatClient {
         // Before we go nonblocking, let's send an intro
         let intro = format!("/user {}", user);
         stream.write(intro.as_bytes()).unwrap();
-
         stream.set_nonblocking(true).unwrap();
 
         let mut buffer = [0; 1024];
@@ -77,12 +76,12 @@ impl ChatClient {
                         match room_receiver.lock().unwrap().try_recv() {
                             Ok(message) => {
                                 let message = message.trim();
-                                match message {
-                                    "/quit" => return,
-                                    _ => {
-                                        stream.write(message.as_bytes()).unwrap();
-                                        stream.flush().unwrap();
-                                    }
+
+                                stream.write(message.as_bytes()).unwrap();
+                                stream.flush().unwrap();
+
+                                if message == "/quit" {
+                                    return;
                                 }
                             }
                             Err(_) => {}

@@ -137,6 +137,12 @@ impl ChatServer {
 
                             if message.starts_with("/user") {
                                 user = String::from(message["/user".len()..].trim());
+                            } else if message == "/quit" {
+                                message_sender
+                                    .lock()
+                                    .unwrap()
+                                    .send(format!("{} has left the room.", user))
+                                    .unwrap();
                             } else {
                                 message_sender
                                     .lock()
