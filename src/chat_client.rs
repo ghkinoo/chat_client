@@ -8,6 +8,7 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
+use std::time::Duration;
 
 #[derive(Eq, PartialEq, Clone)]
 enum Source {
@@ -55,20 +56,26 @@ impl ChatClient {
         let mut events = Events::new();
 
         loop {
-            // Wait for something to happen on our sources.
-            sources.wait(&mut events).unwrap();
+            match sources.wait_timeout(&mut events, Duration::from_secs(5)) {
+                Ok(_) => {}
+                Err(err) if err.kind() == io::ErrorKind::TimedOut => {
+                    println!("Timed out");
+                    process::exit(1);
+                }
+                Err(_) => {}
+            }
 
             for (key, event) in events.iter() {
                 match key {
                     Source::Server if event.readable => match stream.read(&mut buffer) {
                         Ok(bytes_read) => {
                             if bytes_read == 0 {
-                                return;
+                                println!("Server disconnected");
+                                process::exit(1);
                             }
-                            println!(
-                                "{}",
-                                String::from_utf8(buffer[..bytes_read].to_vec()).unwrap()
-                            );
+
+                            let message = String::from_utf8(buffer[..bytes_read].to_vec()).unwrap();
+                            println!("{}", message);
                         }
                         Err(_) => {}
                     },
@@ -84,7 +91,9 @@ impl ChatClient {
                                     return;
                                 }
                             }
-                            Err(_) => {}
+                            Err(_) => {
+                                thread::sleep(Duration::from_millis(10));
+                            }
                         }
                     }
                     _ => {}

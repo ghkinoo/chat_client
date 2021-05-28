@@ -13,6 +13,7 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
+use std::time::Duration;
 
 use crate::thread_pool::ThreadPool;
 
@@ -99,9 +100,10 @@ impl ChatServer {
                 Ok(message) => {
                     room_sender.lock().unwrap().broadcast(message);
                 }
-                Err(_) => {}
+                Err(_) => {
+                    thread::sleep(time::Duration::from_millis(10));
+                }
             }
-            thread::sleep(time::Duration::from_millis(10));
         }
     }
 
@@ -159,7 +161,9 @@ impl ChatServer {
                             stream.write(message.as_bytes()).unwrap();
                             stream.flush().unwrap();
                         }
-                        Err(_) => {}
+                        Err(_) => {
+                            thread::sleep(Duration::from_millis(10));
+                        }
                     },
                     _ => {}
                 }
