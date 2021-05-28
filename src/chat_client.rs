@@ -2,7 +2,6 @@ use popol::Events;
 use popol::Sources;
 use std::io;
 use std::io::prelude::*;
-use std::io::BufWriter;
 use std::net::TcpStream;
 use std::process;
 use std::sync::mpsc;
@@ -13,25 +12,25 @@ use std::thread;
 #[derive(Eq, PartialEq, Clone)]
 enum Source {
     StandardIn,
-    Server
+    Server,
 }
 
 pub struct ChatClient {}
 
 impl ChatClient {
-    pub fn run(&self) {
+    pub fn run(&self, user: String) {
         let (room_sender, room_receiver) = mpsc::channel();
         let room_sender = Arc::new(Mutex::new(room_sender));
         let room_receiver = Arc::new(Mutex::new(room_receiver));
 
-        let room_thread = thread::spawn(|| ChatClient::handle_room(room_receiver));
+        let room_thread = thread::spawn(|| ChatClient::handle_room(user, room_receiver));
         let input_thread = thread::spawn(|| ChatClient::handle_input(room_sender));
 
         input_thread.join().unwrap();
         room_thread.join().unwrap();
     }
 
-    fn handle_room(room_receiver: Arc<Mutex<mpsc::Receiver<String>>>) {
+    fn handle_room(user: String, room_receiver: Arc<Mutex<mpsc::Receiver<String>>>) {
         let mut stream = match TcpStream::connect("127.0.0.1:8080") {
             Ok(stream) => stream,
             Err(err) => {
@@ -43,7 +42,11 @@ impl ChatClient {
             }
         };
 
-        stream.set_nonblocking(true);
+        // Before we go nonblocking, let's send an intro
+        let intro = format!("/user {}", user);
+        stream.write(intro.as_bytes()).unwrap();
+
+        stream.set_nonblocking(true).unwrap();
 
         let mut buffer = [0; 1024];
 
@@ -63,7 +66,10 @@ impl ChatClient {
                             if bytes_read == 0 {
                                 return;
                             }
-                            println!("{}", String::from_utf8(buffer[..bytes_read].to_vec()).unwrap());
+                            println!(
+                                "{}",
+                                String::from_utf8(buffer[..bytes_read].to_vec()).unwrap()
+                            );
                         }
                         Err(_) => {}
                     },
@@ -115,7 +121,7 @@ impl ChatClient {
                             Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                             Err(_) => return,
                         }
-                    },
+                    }
                     _ => {}
                 }
             }

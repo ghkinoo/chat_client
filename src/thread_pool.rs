@@ -1,6 +1,6 @@
-use std::sync::Mutex;
-use std::sync::Arc;
 use std::sync::mpsc;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::thread;
 
 type Job = Box<dyn FnOnce() + Send + 'static>;

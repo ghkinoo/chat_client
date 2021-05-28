@@ -1,7 +1,8 @@
-use super::thread_pool::ThreadPool;
+use bus::Bus;
+use bus::BusReader;
+use core::time;
 use popol::Events;
 use popol::Sources;
-use core::time;
 use std::io;
 use std::io::prelude::*;
 use std::net::TcpListener;
@@ -12,6 +13,8 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
+
+use crate::thread_pool::ThreadPool;
 
 #[derive(Eq, PartialEq, Clone)]
 enum Source {
@@ -40,16 +43,17 @@ impl ChatServer {
         let mut events = Events::new();
         let pool = ThreadPool::new(4);
 
-        let (room_sender, room_receiver) = mpsc::channel();
+        let room_sender = Arc::new(Mutex::new(Bus::new(4)));
         let (message_sender, message_receiver) = mpsc::channel();
 
-        let running_handler = running.clone();
-        let room_sender = Arc::new(Mutex::new(room_sender));
-        let message_receiver = Arc::new(Mutex::new(message_receiver));
-        pool.execute(|| ChatServer::handle_room(running_handler, message_receiver, room_sender));
+        let running_copy = running.clone();
+        let message_receiver_ref = Arc::new(Mutex::new(message_receiver));
+        let room_sender_ref = room_sender.clone();
+        pool.execute(|| {
+            ChatServer::handle_room(running_copy, message_receiver_ref, room_sender_ref)
+        });
 
-        let room_receiver = Arc::new(Mutex::new(room_receiver));
-        let message_sender = Arc::new(Mutex::new(message_sender));
+        let message_sender_ref = Arc::new(Mutex::new(message_sender));
 
         while running.load(Ordering::SeqCst) {
             // Wait for something to happen on our sources.
@@ -64,16 +68,16 @@ impl ChatServer {
                             Err(_) => return,
                         };
 
-                        let running_handler = running.clone();
-                        let room_receiver = room_receiver.clone();
-                        let message_sender = message_sender.clone();
+                        let running = running.clone();
+                        let room_receiver = room_sender.clone().lock().unwrap().add_rx();
+                        let message_sender_ref = message_sender_ref.clone();
 
                         pool.execute(|| {
                             ChatServer::handle_client(
                                 conn,
-                                running_handler,
+                                running,
                                 room_receiver,
-                                message_sender,
+                                message_sender_ref,
                             );
                         });
                     },
@@ -86,14 +90,14 @@ impl ChatServer {
     fn handle_room(
         running: Arc<AtomicBool>,
         message_receiver: Arc<Mutex<mpsc::Receiver<String>>>,
-        room_sender: Arc<Mutex<mpsc::Sender<String>>>,
+        room_sender: Arc<Mutex<Bus<String>>>,
     ) {
         println!("Room started");
 
         while running.load(Ordering::SeqCst) {
             match message_receiver.lock().unwrap().try_recv() {
                 Ok(message) => {
-                    room_sender.lock().unwrap().send(message).unwrap();
+                    room_sender.lock().unwrap().broadcast(message);
                 }
                 Err(_) => {}
             }
@@ -104,11 +108,12 @@ impl ChatServer {
     fn handle_client(
         mut stream: TcpStream,
         running: Arc<AtomicBool>,
-        room_receiver: Arc<Mutex<mpsc::Receiver<String>>>,
+        mut room_receiver: BusReader<String>,
         message_sender: Arc<Mutex<mpsc::Sender<String>>>,
     ) {
         println!("Client connected");
 
+        let mut user = String::from("Unknown");
         let mut buffer = [0; 1024];
 
         let mut sources = Sources::new();
@@ -126,25 +131,30 @@ impl ChatServer {
                             if bytes_read == 0 {
                                 return;
                             }
-                            let buffer_vec = buffer[..bytes_read].to_vec();
-                            message_sender
-                                .lock()
-                                .unwrap()
-                                .send(String::from_utf8(buffer_vec).unwrap())
-                                .unwrap();
+
+                            let message = String::from_utf8(buffer[..bytes_read].to_vec()).unwrap();
+                            let message = message.trim();
+
+                            if message.starts_with("/user") {
+                                user = String::from(message["/user".len()..].trim());
+                            } else {
+                                message_sender
+                                    .lock()
+                                    .unwrap()
+                                    .send(format!("{}: {}", user, message.to_string()))
+                                    .unwrap();
+                            }
                         }
                         Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
                         Err(_) => return,
                     },
-                    Source::Client if event.writable => {
-                        match room_receiver.lock().unwrap().try_recv() {
-                            Ok(message) => {
-                                stream.write(message.as_bytes()).unwrap();
-                                stream.flush().unwrap();
-                            }
-                            Err(_) => {}
+                    Source::Client if event.writable => match room_receiver.try_recv() {
+                        Ok(message) => {
+                            stream.write(message.as_bytes()).unwrap();
+                            stream.flush().unwrap();
                         }
-                    }
+                        Err(_) => {}
+                    },
                     _ => {}
                 }
             }
